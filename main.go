@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"encoding/base32"
-	"encoding/base64"
 	"flag"
 	"fmt"
 	"io/ioutil"
