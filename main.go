@@ -38,7 +38,7 @@ const (
 	BitcoinMode = "bitcoin"
 )
 
-func generate(wg *sync.WaitGroup, re *regexp.Regexp, prefixes []string, outputMode string, outputPath string, resultChan chan PrefixMatch) {
+func generate(wg *sync.WaitGroup, re *regexp.Regexp, prefixes []string, outputMode string, resultChan chan PrefixMatch) {
 	var attempts uint64
 	startTime := time.Now()
 
@@ -57,12 +57,11 @@ func generate(wg *sync.WaitGroup, re *regexp.Regexp, prefixes []string, outputMo
 					match := PrefixMatch{
 						Prefix:      prefix,
 						OnionAddr:   onionAddress,
-						PrivateKey:  base64.StdEncoding.EncodeToString(secretKey[:32]),
+						PrivateKey:  base32.StdEncoding.EncodeToString(secretKey[:32]),
 						Attempts:    attempts,
 						ElapsedTime: time.Since(startTime),
 					}
 					resultChan <- match
-					break
 				}
 			}
 		} else if re != nil && re.MatchString(onionAddress) {
@@ -71,7 +70,7 @@ func generate(wg *sync.WaitGroup, re *regexp.Regexp, prefixes []string, outputMo
 			match := PrefixMatch{
 				Prefix:      "",
 				OnionAddr:   onionAddress,
-				PrivateKey:  base64.StdEncoding.EncodeToString(secretKey[:32]),
+				PrivateKey:  base32.StdEncoding.EncodeToString(secretKey[:32]),
 				Attempts:    attempts,
 				ElapsedTime: time.Since(startTime),
 			}
@@ -127,15 +126,9 @@ func saveTorFormat(onionAddress string, publicKey ed25519.PublicKey, secretKey [
 	checkErr(ioutil.WriteFile(onionAddress+"/hostname", []byte(onionAddress+".onion\n"), 0600))
 }
 
-func saveBitcoinFormatMulti(matches []PrefixMatch, outputPath string) {
-	// Determine the output location
-	var outputFile string
-	if outputPath == "" {
-		// Default to current directory if not specified
-		outputFile = "onion_v3_private_key"
-	} else {
-		outputFile = outputPath
-	}
+func saveBitcoinFormatSingle(match PrefixMatch) {
+	// Create filename based on the onion address
+	outputFile := match.OnionAddr
 
 	// Create or truncate the output file
 	file, err := os.OpenFile(outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
@@ -145,35 +138,26 @@ func saveBitcoinFormatMulti(matches []PrefixMatch, outputPath string) {
 	}
 	defer file.Close()
 
-	// Write each key to the file
-	writer := bufio.NewWriter(file)
-	for _, match := range matches {
-		// Encode the key in the format Bitcoin Core expects
-		bitcoinKeyFormat := "ED25519-V3:" + match.PrivateKey + "\n"
+	// Encode the key in the format Bitcoin Core expects (Base32)
+	bitcoinKeyFormat := "ED25519-V3:" + match.PrivateKey + "\n"
 
-		_, err := writer.WriteString(bitcoinKeyFormat)
-		if err != nil {
-			fmt.Printf("Error writing to file %s: %v\n", outputFile, err)
-			os.Exit(1)
-		}
-
-		fmt.Printf("Generated address: %s.onion", match.OnionAddr)
-		if match.Prefix != "" {
-			fmt.Printf(" (matched prefix: %s)", match.Prefix)
-		}
-		fmt.Printf(" after %d attempts (%.2f/sec)\n",
-			match.Attempts, float64(match.Attempts)/match.ElapsedTime.Seconds())
-	}
-
-	// Flush the writer to ensure all data is written
-	err = writer.Flush()
+	// Write the key to the file
+	_, err = file.WriteString(bitcoinKeyFormat)
 	if err != nil {
-		fmt.Printf("Error flushing data to file %s: %v\n", outputFile, err)
+		fmt.Printf("Error writing to file %s: %v\n", outputFile, err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Bitcoin format keys saved to %s\n", outputFile)
+	fmt.Printf("Generated address: %s.onion", match.OnionAddr)
+	if match.Prefix != "" {
+		fmt.Printf(" (matched prefix: %s)", match.Prefix)
+	}
+	fmt.Printf(" after %d attempts (%.2f/sec)\n",
+		match.Attempts, float64(match.Attempts)/match.ElapsedTime.Seconds())
+
+	fmt.Printf("Bitcoin format key saved to %s\n", outputFile)
 }
+
 
 func checkErr(err error) {
 	if err != nil {
@@ -191,13 +175,12 @@ func printUsage() {
 	fmt.Println("  number   - Number of matching addresses to generate before exiting")
 	fmt.Println("\nOptions:")
 	fmt.Println("  -mode       - Output mode: 'tor' (default) or 'bitcoin'")
-	fmt.Println("  -output     - Output file path (for bitcoin mode)")
 	fmt.Println("  -prefixfile - Path to file containing address prefixes (one per line)")
 	fmt.Println("                If provided, regex argument is ignored")
 	fmt.Println("\nExamples:")
 	fmt.Println("  oniongen-go \"^test\" 5                        # Generate 5 addresses starting with 'test' in Tor format")
 	fmt.Println("  oniongen-go -mode=bitcoin \"^btc\" 1            # Generate 1 address starting with 'btc' in Bitcoin format")
-	fmt.Println("  oniongen-go -mode=bitcoin -output=/path/to/onion_v3_private_key \"^btc\" 1")
+	fmt.Println("                                              # (saved to a file named after the onion address)")
 	fmt.Println("  oniongen-go -mode=bitcoin -prefixfile=prefixes.txt 5  # Generate 5 addresses with prefixes from file")
 	fmt.Println("\nReferences:")
 	fmt.Println("  - Tor v3 onion address specification: https://github.com/torproject/torspec/blob/master/rend-spec-v3.txt")
@@ -234,7 +217,6 @@ func readPrefixFile(filepath string) ([]string, error) {
 func main() {
 	// Define command-line flags
 	outputMode := flag.String("mode", TorMode, "Output mode: 'tor' or 'bitcoin'")
-	outputPath := flag.String("output", "", "Output file path (for bitcoin mode)")
 	prefixFilePath := flag.String("prefixfile", "", "Path to file containing address prefixes (one per line)")
 
 	// Custom usage message
@@ -316,18 +298,45 @@ func main() {
 	var matches []PrefixMatch
 	var matchCount int32
 
+	// Track which prefixes still need matches
+	prefixesNeedingMatches := make(map[string]bool)
+	if len(prefixes) > 0 {
+		for _, prefix := range prefixes {
+			prefixesNeedingMatches[prefix] = true
+		}
+	}
+	
 	// Start goroutine to collect results
 	go func() {
 		for match := range resultChan {
 			matches = append(matches, match)
 			atomic.AddInt32(&matchCount, 1)
 
-			// If we've found enough matches, exit
-			if atomic.LoadInt32(&matchCount) >= int32(number) {
-				// In Bitcoin mode, save all matches to a single file
-				if *outputMode == BitcoinMode {
-					saveBitcoinFormatMulti(matches, *outputPath)
+			// If we're in Bitcoin mode, save each match to an individual file
+			if *outputMode == BitcoinMode {
+				saveBitcoinFormatSingle(match)
+			}
+
+			// If using prefixes, mark this prefix as found
+			if len(prefixes) > 0 && prefixesNeedingMatches[match.Prefix] {
+				// We keep it in the map but mark it as false to continue collecting matches for it
+				prefixesNeedingMatches[match.Prefix] = false
+			}
+
+			// Conditions to exit:
+			// 1. We've found the total requested number of matches
+			// 2. If using prefixes, all prefixes have at least one match
+			allPrefixesMatched := true
+			if len(prefixes) > 0 {
+				for _, needsMatch := range prefixesNeedingMatches {
+					if needsMatch {
+						allPrefixesMatched = false
+						break
+					}
 				}
+			}
+
+			if atomic.LoadInt32(&matchCount) >= int32(number) && (len(prefixes) == 0 || allPrefixesMatched) {
 				os.Exit(0)
 			}
 		}
@@ -336,7 +345,7 @@ func main() {
 	// Start worker goroutines
 	for i := 0; i < runtime.NumCPU(); i++ {
 		wg.Add(1)
-		go generate(&wg, re, prefixes, *outputMode, *outputPath, resultChan)
+		go generate(&wg, re, prefixes, *outputMode, resultChan)
 	}
 
 	// Wait for all workers to complete (this will never happen in normal circumstances)

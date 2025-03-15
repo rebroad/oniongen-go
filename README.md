@@ -46,7 +46,7 @@ Each address is saved in its own directory with the required files: `hs_ed25519_
 go run main.go -mode=bitcoin "^btc" 1
 ```
 
-This generates an onion address starting with "btc" and saves the private key in Bitcoin Core's format (`ED25519-V3:{base64-encoded-key}`) to a file named `onion_v3_private_key` in the current directory.
+This generates an onion address starting with "btc" and saves the private key in Bitcoin Core's format (`ED25519-V3:{base32-encoded-key}`) to a file named `onion_v3_private_key` in the current directory.
 
 ### Generate Bitcoin Core-compatible key with custom output location
 
@@ -67,7 +67,7 @@ Keys are saved in Tor's native format with appropriate file structure for direct
 
 ### Bitcoin Format
 
-Keys are saved in Bitcoin Core's expected format: `ED25519-V3:{base64-encoded-key}`. This format is compatible with Bitcoin Core's Tor hidden service integration and can be used directly as the `onion_v3_private_key` file.
+Keys are saved in Bitcoin Core's expected format: `ED25519-V3:{base32-encoded-key}`. This format is compatible with Bitcoin Core's Tor hidden service integration and can be used directly as the `onion_v3_private_key` file.
 
 ## References
 
